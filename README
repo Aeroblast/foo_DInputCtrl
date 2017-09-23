@@ -2,3 +2,12 @@
 a foobar2000 component for controlling playback by a DirectInput Game Device. 
 一个用于从DirectInput手柄控制播放的foobar2000插件
 再也不用烦恼趴在电脑上写作业的时候不能切歌啦哈哈哈哈哈
+
+·手头只有DualShock4所以定义都用的DS4
+操作：
+·R1/L1 下一曲/上一曲
+·圆圈○ 开始/暂停
+·十字键↕ 音量
+·Home(PS键)停止
+
+um，不够用再添，先这样。
