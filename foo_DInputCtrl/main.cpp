@@ -34,10 +34,11 @@
 #define Playback_Rand  12
 #define Playback_Vol_Up  13
 #define Playback_Vol_Down  14
+#define Playback_Kick  15
 
 DECLARE_COMPONENT_VERSION(
 "DInputCtrl",
-"0.0.1",
+"0.0.2",
 "DirectInput Contrllor\n"
 );
 VALIDATE_COMPONENT_FILENAME("foo_DInputCtrl.dll");
@@ -49,24 +50,87 @@ DIJOYSTATE2 DIStateWC[2];//DirectInput Wireless Controller
 HWND m_hwnd;
 int DIStateSwitch=0;
 HANDLE hThread = 0;
-
+LARGE_INTEGER queryTimeFre;
 
 //前向声明
 DWORD WINAPI DICtrlMain(LPVOID pParam);
 bool GetKey(int myKeycode);
 bool GetKeyDown(int myKeycode);
 
+template<class Interface>
+inline void SafeRelease(
+	Interface **ppInterfaceToRelease
+)
+{
+	if (*ppInterfaceToRelease != NULL)
+	{
+		(*ppInterfaceToRelease)->Release();
+
+		(*ppInterfaceToRelease) = NULL;
+	}
+}
+
 class dictrl_initquit : public initquit {
 public:
 	void on_init() {
+		QueryPerformanceFrequency(&queryTimeFre);
 		m_hwnd = GetActiveWindow();
 		if(!hThread)hThread=CreateThread(0,0,DICtrlMain,0,0,0);
 	}
 	void on_quit() {
 	}
 };
-
 static initquit_factory_t<dictrl_initquit> initquit_factory;
+
+class dictrl_mainmenu_commands: public mainmenu_commands {
+public:
+
+	t_uint32 get_command_count() {
+		return 1;
+	}
+	GUID get_command(t_uint32 p_index) {
+		static const GUID guid_refresh= { 0xb1fe4853, 0x3dda, 0x4666,{ 0xb1, 0x46, 0x57, 0x3b, 0x9a, 0xd8, 0x74, 0xd7 } };
+		switch (p_index) {
+		case 0: return guid_refresh;
+		default: uBugCheck();
+		}
+	}
+	void get_name(t_uint32 p_index, pfc::string_base & p_out) {
+		switch (p_index) {
+		case 0: p_out = "Refresh DInputCtrl"; break;
+		default: uBugCheck(); 
+		}
+	}
+	bool get_description(t_uint32 p_index, pfc::string_base & p_out) {
+		switch (p_index) {
+		case 0: p_out = "Restart the DInputCtrl thread to get a device."; return true;
+		default: uBugCheck(); 
+		}
+	}
+	GUID get_parent() {
+		return mainmenu_groups::playback;
+	}
+	void execute(t_uint32 p_index, service_ptr_t<service_base> p_callback) {
+		switch (p_index) {
+		case 0:
+		{
+			if (hThread) 
+			{
+				TerminateThread(hThread,0);
+				SafeRelease(&pDIDeviceWC);
+				SafeRelease(&pDI);
+				hThread = 0;
+			}
+			hThread = CreateThread(0, 0, DICtrlMain, 0, 0, 0);
+		}
+			break;
+
+		default:
+			uBugCheck(); 
+		}
+	}
+};
+static mainmenu_commands_factory_t<dictrl_mainmenu_commands> g_mainmenu_commands_factory;
 
 class playback_ctrl :public main_thread_callback {
 public:
@@ -90,6 +154,18 @@ public:
 			m_playback_control->volume_up(); break;
 		case Playback_Vol_Down:
 			m_playback_control->volume_down(); break;
+		case Playback_Kick:
+		{
+			metadb_handle_ptr target;
+			static_api_ptr_t<playlist_manager>m_playlist;
+			t_size playlist; t_size location;
+			if (m_playlist->get_playing_item_location(&playlist, &location))
+			{
+				m_playlist->playlist_remove_items(playlist,bit_array_one(location));
+				m_playback_control->next();
+			}
+		}
+		break;
 		default:
 			break;
 		}
@@ -100,7 +176,6 @@ public:
 	}
 };
 
-//see main_thread_callback
 BOOL CALLBACK DIEnumDevicesCallback(
 	LPCDIDEVICEINSTANCE lpddi,
 	LPVOID pvRef
@@ -129,10 +204,10 @@ DWORD WINAPI DICtrlMain(LPVOID pParam)
 		popup_message::g_show("Successfully got a contoller.", "DInputCtrl");
 		while (TRUE)
 		{
-			static_api_ptr_t<main_thread_callback_manager> foo_m;
+			static static_api_ptr_t<main_thread_callback_manager> foo_m;
+			DIStateSwitch ^= 1;
 			hr = pDIDeviceWC->Acquire();
 			hr = pDIDeviceWC->GetDeviceState(sizeof(DIJOYSTATE2), &DIStateWC[DIStateSwitch]);
-			DIStateSwitch ^= 1;
 
 			if (GetKeyDown(Keycode_Button_R1)) 
 			{
@@ -150,17 +225,82 @@ DWORD WINAPI DICtrlMain(LPVOID pParam)
 			{
 				foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Start_or_Pause));
 			}
+
+			//音量部分
+			static int volChangeFre=2;
+			static bool checkButtonUp=false;
+			static LARGE_INTEGER checkButtonUpTime = {0};
 			if (GetKeyDown(Keycode_Button_Up)) 
 			{
 				foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Vol_Up));
+				QueryPerformanceCounter(&checkButtonUpTime);
+				checkButtonUp = true;
 			}
+			if (checkButtonUp) 
+			{
+				if (GetKey(Keycode_Button_Up))
+				{
+					LARGE_INTEGER tempTime;
+					QueryPerformanceCounter(&tempTime);
+					if (tempTime.QuadPart - checkButtonUpTime.QuadPart > queryTimeFre.QuadPart/volChangeFre) 
+					{
+						foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Vol_Up));
+						checkButtonUpTime = tempTime;
+						volChangeFre++;
+					}
+				}
+				else 
+				{
+					checkButtonUp = false;
+					volChangeFre = 2;
+				}
+			}
+			static bool checkButtonDown = false;
+			static LARGE_INTEGER checkButtonDownTime = { 0 };
 			if (GetKeyDown(Keycode_Button_Down))
 			{
 				foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Vol_Down));
+				QueryPerformanceCounter(&checkButtonDownTime);
+				checkButtonDown = true;
 			}
-
+			if (checkButtonDown)
+			{
+				if (GetKey(Keycode_Button_Down))
+				{
+					LARGE_INTEGER tempTime;
+					QueryPerformanceCounter(&tempTime);
+					if (tempTime.QuadPart - checkButtonDownTime.QuadPart > queryTimeFre.QuadPart/ volChangeFre)
+					{
+						foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Vol_Down));
+						checkButtonDownTime = tempTime;
+						volChangeFre++;
+					}
+				}
+				else
+				{
+					volChangeFre = 2;
+					checkButtonDown = false;
+				}
+			}
+			//双击踢歌
+			if (GetKeyDown(Keycode_Button_Triangle)) 
+			{
+				static LARGE_INTEGER lastDownTime = { 0 }, downTime = {0};
+#define PRESS_TIME 1
+				if(downTime.QuadPart==0)QueryPerformanceCounter(&downTime);
+				else 
+				{
+					lastDownTime = downTime;
+					QueryPerformanceCounter(&downTime);
+					if ((downTime.QuadPart-lastDownTime.QuadPart)<queryTimeFre.QuadPart*PRESS_TIME)
+					{
+						foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Kick));
+					}
+				}
+			}
 		}
 	}
+	hThread = 0;
 	return 0;
 }
 
