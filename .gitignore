@@ -56,3 +56,12 @@ Network Trash Folder
 Temporary Items
 .apdisk
 *.db
+*.ilk
+*.exp
+*.dll
+*.ipdb
+*.iobj
+Release/foo_DInputCtrl.lib
+*.pdb
+debug/foo_DInputCtrl.lib
+*.opendb

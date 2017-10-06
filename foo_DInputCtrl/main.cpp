@@ -38,7 +38,7 @@
 
 DECLARE_COMPONENT_VERSION(
 "DInputCtrl",
-"0.0.2",
+"0.0.3",
 "DirectInput Contrllor\n"
 );
 VALIDATE_COMPONENT_FILENAME("foo_DInputCtrl.dll");
@@ -48,15 +48,15 @@ LPDIRECTINPUT8         pDI = 0;//DirectInput
 IDirectInputDevice8* pDIDeviceWC = 0;//DirectInput Wireless Controller
 DIJOYSTATE2 DIStateWC[2];//DirectInput Wireless Controller
 HWND m_hwnd;
+MMRESULT timerID=0;
 int DIStateSwitch=0;
-HANDLE hThread = 0;
 LARGE_INTEGER queryTimeFre;
 
 //前向声明
-DWORD WINAPI DICtrlMain(LPVOID pParam);
 bool GetKey(int myKeycode);
 bool GetKeyDown(int myKeycode);
-
+void Start();
+void CALLBACK Update(UINT uTimerID, UINT uMsg, DWORD_PTR dwUser, DWORD_PTR dw1, DWORD_PTR dw2);
 template<class Interface>
 inline void SafeRelease(
 	Interface **ppInterfaceToRelease
@@ -73,9 +73,7 @@ inline void SafeRelease(
 class dictrl_initquit : public initquit {
 public:
 	void on_init() {
-		QueryPerformanceFrequency(&queryTimeFre);
-		m_hwnd = GetActiveWindow();
-		if(!hThread)hThread=CreateThread(0,0,DICtrlMain,0,0,0);
+		Start();
 	}
 	void on_quit() {
 	}
@@ -114,14 +112,7 @@ public:
 		switch (p_index) {
 		case 0:
 		{
-			if (hThread) 
-			{
-				TerminateThread(hThread,0);
-				SafeRelease(&pDIDeviceWC);
-				SafeRelease(&pDI);
-				hThread = 0;
-			}
-			hThread = CreateThread(0, 0, DICtrlMain, 0, 0, 0);
+			Start();
 		}
 			break;
 
@@ -189,119 +180,130 @@ BOOL CALLBACK DIEnumDevicesCallback(
 	return DIENUM_CONTINUE;
 }
 
-DWORD WINAPI DICtrlMain(LPVOID pParam) 
+void Start() 
 {
 	HRESULT hr;
-	if (FAILED(hr=DirectInput8Create(GetModuleHandle(NULL), 0x0800, IID_IDirectInput8, (void**)&pDI, NULL)))
-		return FALSE;
-	if (FAILED(hr=pDI->EnumDevices(DI8DEVCLASS_GAMECTRL, DIEnumDevicesCallback, 0, DIEDFL_ATTACHEDONLY)))
-		return FALSE;
+	if (timerID)
+	{
+		timeKillEvent(timerID);
+		timerID = 0;
+		SafeRelease(&pDIDeviceWC);
+		SafeRelease(&pDI);
+	}
+	QueryPerformanceFrequency(&queryTimeFre);
+	m_hwnd = GetActiveWindow();
+	if (FAILED(hr = DirectInput8Create(GetModuleHandle(NULL), 0x0800, IID_IDirectInput8, (void**)&pDI, NULL)))
+		return ;
+	if (FAILED(hr = pDI->EnumDevices(DI8DEVCLASS_GAMECTRL, DIEnumDevicesCallback, 0, DIEDFL_ATTACHEDONLY)))
+		return ;
 
 	if (pDIDeviceWC)
 	{
-		hr=pDIDeviceWC->SetDataFormat(&c_dfDIJoystick2);
-		hr=pDIDeviceWC->SetCooperativeLevel(m_hwnd, DISCL_BACKGROUND| DISCL_NONEXCLUSIVE);
+		hr = pDIDeviceWC->SetDataFormat(&c_dfDIJoystick2);
+		hr = pDIDeviceWC->SetCooperativeLevel(m_hwnd, DISCL_BACKGROUND | DISCL_NONEXCLUSIVE);
+		if (FAILED(hr))return;
 		popup_message::g_show("Successfully got a contoller.", "DInputCtrl");
-		while (TRUE)
+		timerID= timeSetEvent(100,50,Update,0, TIME_PERIODIC);
+	}
+}
+
+void CALLBACK Update(UINT uTimerID, UINT uMsg, DWORD_PTR dwUser, DWORD_PTR dw1, DWORD_PTR dw2)
+{
+	HRESULT hr;
+	static static_api_ptr_t<main_thread_callback_manager> foo_m;
+	DIStateSwitch ^= 1;
+	hr = pDIDeviceWC->Acquire();
+	hr = pDIDeviceWC->GetDeviceState(sizeof(DIJOYSTATE2), &DIStateWC[DIStateSwitch]);
+
+	if (GetKeyDown(Keycode_Button_R1))
+	{
+		foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Next));
+	}
+	if (GetKeyDown(Keycode_Button_L1))
+	{
+		foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Prev));
+	}
+	if (GetKeyDown(Keycode_Button_Home))
+	{
+		foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Stop));
+	}
+	if (GetKeyDown(Keycode_Button_Circle))
+	{
+		foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Start_or_Pause));
+	}
+
+	//音量部分
+	static int volChangeFre = 2;
+	static bool checkButtonUp = false;
+	static LARGE_INTEGER checkButtonUpTime = { 0 };
+	if (GetKeyDown(Keycode_Button_Up))
+	{
+		foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Vol_Up));
+		QueryPerformanceCounter(&checkButtonUpTime);
+		checkButtonUp = true;
+	}
+	if (checkButtonUp)
+	{
+		if (GetKey(Keycode_Button_Up))
 		{
-			static static_api_ptr_t<main_thread_callback_manager> foo_m;
-			DIStateSwitch ^= 1;
-			hr = pDIDeviceWC->Acquire();
-			hr = pDIDeviceWC->GetDeviceState(sizeof(DIJOYSTATE2), &DIStateWC[DIStateSwitch]);
-
-			if (GetKeyDown(Keycode_Button_R1)) 
-			{
-				foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Next));
-			}
-			if (GetKeyDown(Keycode_Button_L1))
-			{
-				foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Prev));
-			}
-			if (GetKeyDown(Keycode_Button_Home))
-			{
-				foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Stop));
-			}
-			if (GetKeyDown(Keycode_Button_Circle))
-			{
-				foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Start_or_Pause));
-			}
-
-			//音量部分
-			static int volChangeFre=2;
-			static bool checkButtonUp=false;
-			static LARGE_INTEGER checkButtonUpTime = {0};
-			if (GetKeyDown(Keycode_Button_Up)) 
+			LARGE_INTEGER tempTime;
+			QueryPerformanceCounter(&tempTime);
+			if (tempTime.QuadPart - checkButtonUpTime.QuadPart > queryTimeFre.QuadPart / volChangeFre)
 			{
 				foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Vol_Up));
-				QueryPerformanceCounter(&checkButtonUpTime);
-				checkButtonUp = true;
+				checkButtonUpTime = tempTime;
+				volChangeFre++;
 			}
-			if (checkButtonUp) 
-			{
-				if (GetKey(Keycode_Button_Up))
-				{
-					LARGE_INTEGER tempTime;
-					QueryPerformanceCounter(&tempTime);
-					if (tempTime.QuadPart - checkButtonUpTime.QuadPart > queryTimeFre.QuadPart/volChangeFre) 
-					{
-						foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Vol_Up));
-						checkButtonUpTime = tempTime;
-						volChangeFre++;
-					}
-				}
-				else 
-				{
-					checkButtonUp = false;
-					volChangeFre = 2;
-				}
-			}
-			static bool checkButtonDown = false;
-			static LARGE_INTEGER checkButtonDownTime = { 0 };
-			if (GetKeyDown(Keycode_Button_Down))
+		}
+		else
+		{
+			checkButtonUp = false;
+			volChangeFre = 2;
+		}
+	}
+	static bool checkButtonDown = false;
+	static LARGE_INTEGER checkButtonDownTime = { 0 };
+	if (GetKeyDown(Keycode_Button_Down))
+	{
+		foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Vol_Down));
+		QueryPerformanceCounter(&checkButtonDownTime);
+		checkButtonDown = true;
+	}
+	if (checkButtonDown)
+	{
+		if (GetKey(Keycode_Button_Down))
+		{
+			LARGE_INTEGER tempTime;
+			QueryPerformanceCounter(&tempTime);
+			if (tempTime.QuadPart - checkButtonDownTime.QuadPart > queryTimeFre.QuadPart / volChangeFre)
 			{
 				foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Vol_Down));
-				QueryPerformanceCounter(&checkButtonDownTime);
-				checkButtonDown = true;
+				checkButtonDownTime = tempTime;
+				volChangeFre++;
 			}
-			if (checkButtonDown)
-			{
-				if (GetKey(Keycode_Button_Down))
-				{
-					LARGE_INTEGER tempTime;
-					QueryPerformanceCounter(&tempTime);
-					if (tempTime.QuadPart - checkButtonDownTime.QuadPart > queryTimeFre.QuadPart/ volChangeFre)
-					{
-						foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Vol_Down));
-						checkButtonDownTime = tempTime;
-						volChangeFre++;
-					}
-				}
-				else
-				{
-					volChangeFre = 2;
-					checkButtonDown = false;
-				}
-			}
-			//双击踢歌
-			if (GetKeyDown(Keycode_Button_Triangle)) 
-			{
-				static LARGE_INTEGER lastDownTime = { 0 }, downTime = {0};
+		}
+		else
+		{
+			volChangeFre = 2;
+			checkButtonDown = false;
+		}
+	}
+	//双击踢歌
+	if (GetKeyDown(Keycode_Button_Triangle))
+	{
+		static LARGE_INTEGER lastDownTime = { 0 }, downTime = { 0 };
 #define PRESS_TIME 1
-				if(downTime.QuadPart==0)QueryPerformanceCounter(&downTime);
-				else 
-				{
-					lastDownTime = downTime;
-					QueryPerformanceCounter(&downTime);
-					if ((downTime.QuadPart-lastDownTime.QuadPart)<queryTimeFre.QuadPart*PRESS_TIME)
-					{
-						foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Kick));
-					}
-				}
+		if (downTime.QuadPart == 0)QueryPerformanceCounter(&downTime);
+		else
+		{
+			lastDownTime = downTime;
+			QueryPerformanceCounter(&downTime);
+			if ((downTime.QuadPart - lastDownTime.QuadPart)<queryTimeFre.QuadPart*PRESS_TIME)
+			{
+				foo_m->add_callback(new service_impl_t<playback_ctrl>(Playback_Kick));
 			}
 		}
 	}
-	hThread = 0;
-	return 0;
 }
 
 bool GetKey(int myKeycode)
